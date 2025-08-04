@@ -1,0 +1,12 @@
+body {
+    margin: 0;
+    overflow: hidden;
+    background-color: #da0303;
+}
+  
+canvas {
+    display: block;
+    background-color: #66707c;
+    cursor: none; /* Hides the mouse cursor */
+
+}
