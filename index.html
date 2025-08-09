@@ -1,12 +1,23 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Evil Pencil Dodge</title>
-  <link rel="stylesheet" href="style.css" />
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Evil Pencil — Dodge Game (Prototype)</title>
+  <style>
+    html,body{margin:0;height:100%;overflow:hidden;background:#111}
+    canvas{display:block}
+    #ui{position:fixed;left:12px;top:12px;color:#fff;font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial;z-index:10}
+    #startBtn{padding:8px 12px;border-radius:8px;border:none;background:#22c55e;color:#042;cursor:pointer}
+    #hint{opacity:.8;margin-top:8px;font-size:13px}
+  </style>
 </head>
 <body>
+  <div id="ui">
+    <button id="startBtn">Start</button>
+    <div id="hint">Move the mouse (stay below the grey pencil area). Survive!</div>
+    <div id="score" style="margin-top:8px;color:#fff">Score: 0</div>
+  </div>
   <canvas id="gameCanvas"></canvas>
   <script src="game.js"></script>
 </body>
