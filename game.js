@@ -1,5 +1,5 @@
 /* ======================
-   Full game script (replace current)
+   Full game script (replace current) - FIXED
    ====================== */
 
 /* ========== Canvas & Resize ========== */
@@ -101,13 +101,57 @@ function restartBtnRect(){
   return { x: (canvas.width-w)/2, y: (canvas.height-h)/2, w, h };
 }
 
-/* ========== Bullet class ========== */
+/* ========== Difficulty (simple) ========== */
+const difficulty = {
+  time: 0,
+  level: 0,
+  // timeToRamp controls how fast difficulty.level grows (ms). larger = slower ramp
+  timeToRamp: 120000, // 2 minutes to reach '1' (you can tweak)
+  tick(dt){
+    this.time += dt;
+    this.level = Math.min(10, this.time / this.timeToRamp);
+  }
+};
+
+/* ========== Attacks system (registry + list) ========== */
+const attackRegistry = []; // push classes here
+const attacks = []; // ACTIVE attack instances
+
+function registerAttack(cls){ attackRegistry.push(cls); }
+
+// spawn random attack (equal weight)
+function spawnRandomAttack(x){
+  if (attackRegistry.length === 0) return;
+  const idx = Math.floor(Math.random() * attackRegistry.length);
+  const Cls = attackRegistry[idx];
+  const instance = new Cls(x);
+  attacks.push(instance);
+  return instance;
+}
+
+class AttackBase {
+  constructor() {
+    this.alive = true;
+    this.elapsed = 0;
+    this.telegraphDuration = 600; // ms default
+    this.active = false; // becomes true after telegraphDuration
+  }
+  update(dt){
+    this.elapsed += dt;
+    if (!this.active && this.elapsed >= this.telegraphDuration) this.active = true;
+  }
+  draw(ctx){}
+}
+
+/* ========== Bullet class (MUST be present) ========== */
 class Bullet {
   constructor(x,y, vx,vy) {
     this.x = x; this.y = y;
     this.vx = vx; this.vy = vy;
     this.radius = 6;
     this.alive = true;
+    // optional per-bullet damage (default handled in collision)
+    // this.damage = undefined;
   }
   update(dt) {
     this.x += this.vx * dt;
@@ -138,70 +182,107 @@ class Bullet {
   }
 }
 
-/* ========== GunAttack ========== */
-class GunAttack {
+/* ======================
+   GunAttack as an AttackBase (telegraph -> shoot -> done)
+   ====================== */
+class GunAttack extends AttackBase {
   constructor(x, y = Math.max(30, PENCIL_ZONE_HEIGHT - 60)) {
+    super();
     this.x = x;
     this.y = Math.min(PENCIL_ZONE_HEIGHT - 20, Math.max(20, y));
     this.scale = 0;
-    this.alive = true;
 
-    this.drawDuration = 600;
+    // timings
+    this.telegraphDuration = 600; // show 'draw' before shooting
+    this.drawDuration = this.telegraphDuration; // alias for clarity
     this.elapsed = 0;
 
+    // shooting
     this.shootCount = 3;
     this.shotsFired = 0;
     this.shootInterval = 380;
     this.shootTimer = 0;
 
+    // afterlife
     this.postLife = 900;
     this.afterTimer = 0;
-    this.bulletSpeed = 0.65;
 
-    this.localBullets = [];
+    // bullet behavior
+    this.bulletSpeed = 0.65; // px/ms
+    this.localBullets = [];  // local bullets for this gun (also pushed to global bullets)
   }
 
   update(dt) {
     if (!this.alive) return;
-    this.elapsed += dt;
-    if (this.elapsed < this.drawDuration) {
-      const t = this.elapsed / this.drawDuration;
-      this.scale = Math.min(1.12, (1 - Math.pow(1-t,3)));
-    } else {
-      this.shootTimer += dt;
-      if (this.shotsFired < this.shootCount && this.shootTimer >= this.shootInterval) {
-        this.shootTimer = 0;
-        this.fireOneBullet();
-        this.shotsFired++;
-      }
-      if (this.shotsFired >= this.shootCount) {
-        this.localBullets = this.localBullets.filter(b => b.alive);
-        if (this.localBullets.length === 0) {
-          this.afterTimer += dt;
-          if (this.afterTimer >= this.postLife) this.alive = false;
-        }
+    super.update(dt); // updates elapsed and sets active
+
+    // animate scale during telegraph/draw
+    if (!this.active) {
+      const t = clamp(this.elapsed / this.drawDuration, 0, 1);
+      // ease out + slight overshoot
+      this.scale = Math.min(1.12, (1 - Math.pow(1 - t, 3)));
+      return;
+    }
+
+    // active (shooting) phase
+    this.shootTimer += dt;
+    if (this.shotsFired < this.shootCount && this.shootTimer >= this.shootInterval) {
+      this.shootTimer = 0;
+      this.fireOneBullet();
+      this.shotsFired++;
+    }
+
+    // update local bullets
+    for (let b of this.localBullets) b.update(dt);
+
+    // after firing all, wait for bullets to clear then die after postLife
+    if (this.shotsFired >= this.shootCount) {
+      this.localBullets = this.localBullets.filter(b => b.alive);
+      if (this.localBullets.length === 0) {
+        this.afterTimer += dt;
+        if (this.afterTimer >= this.postLife) this.alive = false;
       }
     }
-    for (let b of this.localBullets) b.update(dt);
   }
 
   fireOneBullet() {
+    // snapshot player position at shot time
     const targetX = mouseX;
     const targetY = mouseY;
     const dx = targetX - this.x;
     const dy = targetY - this.y;
-    const mag = Math.hypot(dx,dy) || 1;
+    const mag = Math.hypot(dx, dy) || 1;
     const vx = dx / mag * this.bulletSpeed;
     const vy = dy / mag * this.bulletSpeed;
     const bullet = new Bullet(this.x, this.y, vx, vy);
+    // attach damage per-bullet (defaults used in collision)
+    bullet.damage = BULLET_DAMAGE;
     this.localBullets.push(bullet);
     bullets.push(bullet);
+
+    // muzzle flash/pulse
     this.scale = 1.25;
     setTimeout(()=> { this.scale = 1; }, 80);
   }
 
   draw() {
     if (!this.alive) return;
+
+    // If we're in telegraph (not active) show the pencil-drawing animation (telegraph)
+    if (!this.active) {
+      ctx.save();
+      ctx.translate(this.x, this.y);
+      const t = clamp(this.elapsed / this.drawDuration, 0, 1);
+      const s = Math.min(1.12, (1 - Math.pow(1 - t, 3)));
+      ctx.scale(s, s);
+      // draw faint gun preview
+      ctx.fillStyle = "rgba(160,160,160,0.12)";
+      roundRect(ctx, -60, -20, 120, 40, 8); ctx.fill();
+      ctx.restore();
+      return;
+    }
+
+    // active / shooting: draw gun image or fallback shape
     ctx.save();
     ctx.translate(this.x, this.y);
     ctx.scale(this.scale, this.scale);
@@ -224,6 +305,290 @@ class GunAttack {
     ctx.restore();
   }
 }
+registerAttack(GunAttack);
+
+/* ========== Mortar, Sword, Staff attacks (unchanged, but rely on difficulty existing) ========== */
+
+// small Explosion helper
+class Explosion {
+  constructor(x,y, radius, damage, life=400){
+    this.x = x; this.y = y;
+    this.radius = radius;
+    this.damage = damage;
+    this.elapsed = 0;
+    this.life = life;
+    this.alive = true;
+    this.applied = false; // apply damage once
+  }
+  update(dt){
+    this.elapsed += dt;
+    if (this.elapsed >= this.life) this.alive = false;
+  }
+  draw(){
+    const t = this.elapsed / this.life;
+    ctx.save();
+    ctx.beginPath();
+    ctx.lineWidth = 4 * (1 - t);
+    ctx.strokeStyle = `rgba(255,120,40,${1 - t})`;
+    ctx.arc(this.x, this.y, this.radius * (0.7 + 0.7 * t), 0, Math.PI*2);
+    ctx.stroke();
+    ctx.restore();
+  }
+  applyIfHitPlayer(){
+    if (this.applied) return;
+    const d = distance(this.x, this.y, mouseX, mouseY);
+    if (d <= this.radius + playerRadius) {
+      playerHealth = clamp(playerHealth - this.damage, 0, MAX_HEALTH);
+    }
+    this.applied = true;
+  }
+}
+
+// MortarAttack
+class MortarAttack extends AttackBase {
+  constructor(x){
+    super();
+    this.x = x;
+    this.targets = [];
+    for (let i=0;i<3;i++){
+      const rx = clamp(mouseX + (Math.random()*2 - 1) * 160, 40, canvas.width-40);
+      const ry = clamp(mouseY + (Math.random()*2 - 1) * 120, PLAY_TOP+40, canvas.height-40);
+      this.targets.push({x: rx, y: ry, arrived:false});
+    }
+    this.telegraphDuration = 900; // show circles longer so player can dodge
+    this.rocketSpeed = 0.5 + (0.05 * (difficulty.level || 0)); // px/ms
+    this.rockets = [];
+    this.explosions = [];
+    this.explosionRadius = 48;
+    this.damage = 12;
+    this.state = 'telegraph';
+  }
+
+  update(dt){
+    super.update(dt);
+    if (!this.active) return;
+    if (this.state === 'telegraph'){
+      for (let t of this.targets){
+        const sx = clamp(this.x + (Math.random()*2 - 1) * 60, 20, canvas.width-20);
+        const sy = 10;
+        this.rockets.push({x:sx,y:sy, tx:t.x, ty:t.y, done:false});
+      }
+      this.state = 'launched';
+    }
+
+    if (this.state === 'launched'){
+      for (let r of this.rockets){
+        if (r.done) continue;
+        const dx = r.tx - r.x;
+        const dy = r.ty - r.y;
+        const mag = Math.hypot(dx,dy) || 1;
+        const vx = dx / mag * this.rocketSpeed;
+        const vy = dy / mag * this.rocketSpeed;
+        r.x += vx * dt;
+        r.y += vy * dt;
+        if (distance(r.x,r.y, r.tx, r.ty) <= 6){
+          r.done = true;
+          const ex = new Explosion(r.tx, r.ty, this.explosionRadius, this.damage, 500);
+          this.explosions.push(ex);
+        }
+      }
+      for (let e of this.explosions) {
+        e.update(dt);
+        if (!e.applied) e.applyIfHitPlayer();
+      }
+      this.rockets = this.rockets.filter(r => !r.done);
+      this.explosions = this.explosions.filter(e => e.alive);
+      if (this.rockets.length === 0 && this.explosions.length === 0) {
+        this.alive = false;
+      }
+    }
+  }
+
+  draw(){
+    if (!this.active){
+      for (let t of this.targets){
+        ctx.save();
+        ctx.beginPath();
+        ctx.fillStyle = "rgba(255,60,60,0.12)";
+        ctx.strokeStyle = "rgba(255,60,60,0.22)";
+        ctx.lineWidth = 2;
+        ctx.arc(t.x, t.y, this.explosionRadius, 0, Math.PI*2);
+        ctx.fill(); ctx.stroke();
+        ctx.restore();
+      }
+      return;
+    }
+    for (let r of this.rockets){
+      ctx.save();
+      ctx.translate(r.x, r.y);
+      ctx.beginPath();
+      ctx.fillStyle = "#ff8f3c";
+      ctx.arc(0,0,7,0,Math.PI*2); ctx.fill();
+      ctx.restore();
+    }
+    for (let e of this.explosions) e.draw();
+  }
+}
+registerAttack(MortarAttack);
+
+class SlashHit {
+  constructor(x,y, angle, length, width, life=180, damage=6){
+    this.x = x; this.y = y; this.angle = angle; this.length = length; this.width = width;
+    this.elapsed = 0; this.life = life; this.alive = true; this.damage = damage; this.applied = false;
+  }
+  update(dt){
+    this.elapsed += dt; if (this.elapsed >= this.life) this.alive = false;
+    if (!this.applied){
+      const dx = Math.cos(this.angle), dy = Math.sin(this.angle);
+      const rx = mouseX - this.x, ry = mouseY - this.y;
+      const proj = (rx*dx + ry*dy);
+      if (proj >= -this.length/2 && proj <= this.length/2){
+        const perp = Math.abs(-dy*rx + dx*ry);
+        if (perp <= this.width/2 + playerRadius){
+          playerHealth = clamp(playerHealth - this.damage, 0, MAX_HEALTH);
+        }
+      }
+      this.applied = true;
+    }
+  }
+  draw(){
+    ctx.save();
+    ctx.translate(this.x, this.y);
+    ctx.rotate(this.angle);
+    ctx.beginPath();
+    ctx.fillStyle = "rgba(255,255,255,0.06)";
+    roundRect(ctx, -this.length/2, -this.width/2, this.length, this.width, this.width/2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+class SwordAttack extends AttackBase {
+  constructor(x){
+    super();
+    this.x = x;
+    this.telegraphDuration = 700;
+    this.slashSpots = [];
+    for (let i=0;i<3;i++){
+      this.slashSpots.push({x: clamp(mouseX + (Math.random()*2-1)*40, 40, canvas.width-40),
+                            y: clamp(mouseY + (Math.random()*2-1)*40, PLAY_TOP+40, canvas.height-40)});
+    }
+    this.phase = 0;
+    this.slashTimers = [0,120,240];
+    this.slashes = [];
+    this.xSlashCreated = false;
+  }
+
+  update(dt){
+    super.update(dt);
+    if (!this.active) return;
+    if (this.phase === 0) {
+      this.phase = 1;
+      this.phaseElapsed = 0;
+    } else if (this.phase === 1) {
+      this.phaseElapsed += dt;
+      for (let i=0;i<this.slashSpots.length;i++){
+        if (this.phaseElapsed >= this.slashTimers[i] && !this.slashes[i]){
+          const angle = (Math.random()*0.6 - 0.3) + Math.atan2(0,1);
+          const spot = this.slashSpots[i];
+          const s = new SlashHit(spot.x, spot.y, angle, 180, 36, 180, 6);
+          this.slashes[i] = s;
+        }
+      }
+      for (let s of this.slashes) if (s) s.update(dt);
+      if (this.phaseElapsed >= 420 && !this.xSlashCreated){
+        const center = { x: mouseX, y: mouseY };
+        const s1 = new SlashHit(center.x, center.y, Math.PI/4, 240, 32, 260, 10);
+        const s2 = new SlashHit(center.x, center.y, -Math.PI/4, 240, 32, 260, 10);
+        this.slashes.push(s1, s2);
+        this.xSlashCreated = true;
+      }
+      const alive = this.slashes.some(s => s && s.alive);
+      if (!alive && this.slashes.length > 0) this.alive = false;
+    }
+  }
+
+  draw(){
+    if (!this.active){
+      for (let sp of this.slashSpots){
+        ctx.save();
+        ctx.translate(sp.x, sp.y);
+        ctx.rotate(0.2);
+        ctx.beginPath();
+        ctx.strokeStyle = "rgba(200,200,255,0.24)";
+        ctx.lineWidth = 6;
+        ctx.moveTo(-30,0); ctx.lineTo(30,0);
+        ctx.stroke();
+        ctx.restore();
+      }
+      return;
+    }
+    for (let s of this.slashes) if (s) s.draw();
+  }
+}
+registerAttack(SwordAttack);
+
+class StaffAttack extends AttackBase {
+  constructor(x){
+    super();
+    this.x = x;
+    this.telegraphDuration = 650;
+    this.waveCount = 0;
+    this.waveDelay = 280;
+    this.spawnedWaves = 0;
+    this.bulletSpeed = 0.5; // px/ms
+    this.numPerWave = 18;
+    this.baseDamage = 2;
+  }
+
+  update(dt){
+    super.update(dt);
+    if (!this.active) return;
+
+    if (this.spawnedWaves === 0){
+      this.spawnWave(0);
+      this.spawnedWaves++;
+      this.waveTimer = 0;
+    } else if (this.spawnedWaves === 1){
+      this.waveTimer += dt;
+      if (this.waveTimer >= this.waveDelay){
+        this.spawnWave(5 * Math.PI/180);
+        this.spawnedWaves++;
+      }
+    } else {
+      this.elapsedSinceDone = (this.elapsedSinceDone || 0) + dt;
+      if (this.elapsedSinceDone > 500) this.alive = false;
+    }
+  }
+
+  spawnWave(offsetDeg){
+    for (let i=0;i<this.numPerWave;i++){
+      const angle = (i / (this.numPerWave - 1)) * Math.PI + offsetDeg;
+      const sx = clamp(this.x + (Math.random()*2-1)*30, 20, canvas.width-20);
+      const sy = PLAY_TOP - 10;
+      const vx = Math.cos(angle) * this.bulletSpeed;
+      const vy = Math.sin(angle) * this.bulletSpeed;
+      const b = new Bullet(sx, sy, vx, vy);
+      b.radius = 5;
+      b.damage = this.baseDamage;
+      bullets.push(b);
+    }
+  }
+
+  draw(){
+    if (!this.active){
+      ctx.save();
+      ctx.beginPath();
+      ctx.strokeStyle = "rgba(255,140,40,0.18)";
+      ctx.lineWidth = 22;
+      ctx.arc(this.x, PLAY_TOP + 20, 160, 0, Math.PI);
+      ctx.stroke();
+      ctx.restore();
+      return;
+    }
+  }
+}
+registerAttack(StaffAttack);
 
 /* ========== Pencil controller ========== */
 const PencilState = { IDLE: 'idle', MOVING: 'moving', DRAWING: 'drawing' };
@@ -279,11 +644,8 @@ class EvilPencil {
     this.state = PencilState.DRAWING;
     const finalDrawDuration = Math.max(220, this.drawTime);
     setTimeout(() => {
-      // spawn gun only if playing (so pencil won't spawn after death/menu)
       if (gameState === 'playing') {
-        const gunY = Math.random() * (PENCIL_ZONE_HEIGHT - 60) + 30;
-        const gun = new GunAttack(this.x, gunY);
-        guns.push(gun);
+        spawnRandomAttack(this.x);
         this.actionsTaken++;
         this.speedUp();
       }
@@ -301,7 +663,6 @@ class EvilPencil {
   goToCenterAndStop() {
     this.targetX = canvas.width/2;
     this.state = PencilState.MOVING;
-    // disable auto-choosing by leaving gameState != 'playing'
   }
 
   draw() {
@@ -345,7 +706,7 @@ class EvilPencil {
 }
 
 /* ========== Globals & init ========== */
-const guns = [];
+const guns = []; // legacy (not actively used now)
 const bullets = [];
 const pencil = new EvilPencil();
 
@@ -353,33 +714,32 @@ setTimeout(()=> pencil.chooseNewTargetAndMove(), 600);
 
 /* ========== Game control functions ========== */
 function startGame(){
-  // starting from menu -> playing
   playerHealth = MAX_HEALTH;
   bullets.length = 0;
   guns.length = 0;
+  attacks.length = 0;
+  difficulty.time = 0; difficulty.level = 0;
   runStartTime = performance.now();
   lastElapsed = 0;
   finalElapsed = 0;
   gameState = 'playing';
-  // ensure pencil is active
   pencil.idleDelay = 380;
   pencil.moveSpeed = 0.22;
-  // center player's initial position to mid play area
   mouseX = canvas.width/2;
   mouseY = (PLAY_TOP + canvas.height)/2;
   pencil.chooseNewTargetAndMove();
 }
 
 function restartGame(){
-  // Called from dead overlay -> immediately start
   playerHealth = MAX_HEALTH;
   bullets.length = 0;
   guns.length = 0;
+  attacks.length = 0;
+  difficulty.time = 0; difficulty.level = 0;
   runStartTime = performance.now();
   lastElapsed = 0;
   finalElapsed = 0;
   gameState = 'playing';
-  // wake pencil back up
   pencil.chooseNewTargetAndMove();
 }
 
@@ -397,41 +757,46 @@ function loop(now) {
 requestAnimationFrame(loop);
 
 function update(dt) {
-  // state-based updates
+  // tick difficulty always (it will only increase while playing because we reset on start)
+  difficulty.tick(dt);
+
   if (gameState === 'playing') {
     pencil.update(dt);
-    for (let g of guns) g.update(dt);
+
+    // update attacks (telegraph and active phases)
+    for (let a of attacks) a.update(dt);
+    for (let i = attacks.length-1; i>=0; i--) if (!attacks[i].alive) attacks.splice(i,1);
+
+    // update bullets (global projectiles)
     for (let b of bullets) b.update(dt);
 
-    // collision detection: bullets -> player
+    // collision: bullets -> player (uses bullet.damage if present)
     for (let i = bullets.length-1; i >= 0; i--) {
       const b = bullets[i];
       if (!b.alive) { bullets.splice(i,1); continue; }
       const d = distance(b.x,b.y, mouseX, mouseY);
       if (d <= b.radius + playerRadius) {
-        // hit
         b.alive = false;
-        playerHealth = clamp(playerHealth - BULLET_DAMAGE, 0, MAX_HEALTH);
-        // remove bullet immediately
+        const hitDamage = (b.damage !== undefined) ? b.damage : BULLET_DAMAGE;
+        playerHealth = clamp(playerHealth - hitDamage, 0, MAX_HEALTH);
         bullets.splice(i,1);
-        // check death
-        if (playerHealth <= 0) {
-          onPlayerDeath();
-          break;
-        }
+        if (playerHealth <= 0) { onPlayerDeath(); break; }
       }
     }
 
-    // cleanup dead guns
+    // cleanup dead guns (if you still use them anywhere) - optional
     for (let i = guns.length-1; i>=0; i--) if (!guns[i].alive) guns.splice(i,1);
 
-    // update lastElapsed (timer for UI)
+    // timer update
     lastElapsed = performance.now() - runStartTime;
   } else {
-    // if not playing, still update pencil movement if it is moving (we want pencil to move to center on death)
+    // non-playing: allow pencil to move to center, update visuals only
     pencil.update(dt);
-    // update remaining bullets/guns visually (we keep them or cleared on death)
-    for (let g of guns) g.update(dt);
+
+    // update attacks visually so telegraphs or in-flight things still animate
+    for (let a of attacks) a.update(dt);
+    for (let i = attacks.length-1; i>=0; i--) if (!attacks[i].alive) attacks.splice(i,1);
+
     for (let b of bullets) b.update(dt);
     for (let i = bullets.length-1; i>=0; i--) if (!bullets[i].alive) bullets.splice(i,1);
     for (let i = guns.length-1; i>=0; i--) if (!guns[i].alive) guns.splice(i,1);
@@ -442,12 +807,10 @@ function update(dt) {
 function onPlayerDeath(){
   gameState = 'dead';
   finalElapsed = lastElapsed;
-  // clear all future spawning: ensure pencil doesn't spawn
-  // move pencil to center and stop spawning
   pencil.goToCenterAndStop();
-  // clear guns and bullets so it looks tidy (optional)
   guns.length = 0;
   bullets.length = 0;
+  attacks.length = 0;
 }
 
 /* ========== Rendering ========== */
@@ -462,23 +825,25 @@ function render() {
   // zones
   drawZones();
 
+  // attacks draw their telegraphs and active visuals
+  for (let a of attacks) a.draw();
+
   // pencil always drawn
   pencil.draw();
 
-  // draw guns & bullets
+  // draw guns & bullets (guns array optional — GunAttack now lives in attacks)
   for (let g of guns) g.draw();
   for (let b of bullets) b.draw();
 
   // UI based on state
   if (gameState === 'menu') {
-    drawPlayerPreview(); // maybe not visible? user said dot appears only after pressing start; so we won't draw main player dot now
+    drawPlayerPreview();
     drawStartButton();
   } else if (gameState === 'playing') {
-    drawPlayer(); // show player dot
+    drawPlayer();
     drawHealthBar();
     drawTimer(lastElapsed);
   } else if (gameState === 'dead') {
-    // Do not draw player dot (they're dead) — show overlay + restart
     drawDeathOverlay(finalElapsed);
   }
 }
@@ -486,7 +851,7 @@ function render() {
 /* helper draws */
 function drawZones(){
   ctx.fillStyle = "#2a2a2a";
-  ctx.fillRect(0,0,PENCIL_ZONE_HEIGHT ? canvas.width : 0, PENCIL_ZONE_HEIGHT);
+  ctx.fillRect(0,0,canvas.width, PENCIL_ZONE_HEIGHT);
 
   ctx.strokeStyle = "#555";
   ctx.lineWidth = 2;
@@ -504,7 +869,6 @@ function drawPlayer(){
 }
 
 function drawPlayerPreview(){
-  // center faint dot for the menu preview (optional)
   const px = canvas.width/2, py = (PLAY_TOP + canvas.height)/2;
   ctx.beginPath();
   ctx.fillStyle = "rgba(218,3,3,0.6)";
@@ -518,20 +882,16 @@ function drawHealthBar(){
   const pad = 16;
   const w = 220, h = 18;
   const x = pad, y = pad;
-  // background
   ctx.fillStyle = "rgba(0,0,0,0.45)";
   roundRect(ctx, x-4, y-4, w+8, h+8, 6); ctx.fill();
 
-  // outer
   ctx.fillStyle = "#222";
   roundRect(ctx, x, y, w, h, 6); ctx.fill();
 
-  // inner fill
   const pct = playerHealth / MAX_HEALTH;
   ctx.fillStyle = (pct > .5) ? "#3ad76e" : (pct > .2 ? "#ffd166" : "#ff3b3b");
   roundRect(ctx, x+2, y+2, Math.max(0, (w-4) * pct), h-4, 5); ctx.fill();
 
-  // text
   ctx.fillStyle = "#fff";
   ctx.font = "14px sans-serif";
   ctx.textAlign = "left";
@@ -549,13 +909,11 @@ function drawTimer(elapsedMs){
 
 function drawStartButton(){
   const r = startBtnRect();
-  // dim stage behind
   ctx.save();
   ctx.fillStyle = "rgba(0,0,0,0.2)";
   ctx.fillRect(0,0,canvas.width,canvas.height);
   ctx.restore();
 
-  // button
   ctx.fillStyle = "#111";
   roundRect(ctx, r.x, r.y, r.w, r.h, 12); ctx.fill();
   ctx.strokeStyle = "#6b6b6b";
@@ -567,20 +925,17 @@ function drawStartButton(){
   ctx.textAlign = "center";
   ctx.fillText("START", r.x + r.w/2, r.y + r.h/2 + 10);
 
-  // hint
   ctx.fillStyle = "rgba(255,255,255,0.65)";
   ctx.font = "14px sans-serif";
   ctx.fillText("Dodge the bullets — move with your mouse", canvas.width/2, r.y + r.h + 36);
 }
 
 function drawDeathOverlay(finalMs){
-  // dark overlay
   ctx.save();
   ctx.fillStyle = "rgba(0,0,0,0.55)";
   ctx.fillRect(0,0,canvas.width, canvas.height);
   ctx.restore();
 
-  // centered panel
   const w = 420, h = 220;
   const x = (canvas.width - w)/2, y = (canvas.height - h)/2;
   ctx.fillStyle = "#0f1720";
@@ -597,10 +952,8 @@ function drawDeathOverlay(finalMs){
   ctx.font = "18px sans-serif";
   ctx.fillText(`Your time alive: ${fmtTime(Math.floor(finalMs))}`, x + w/2, y + 90);
 
-  // restart button inside panel
   const btn = restartBtnRect();
-  const brx = btn.x, bry = btn.y, brw = btn.w, brh = btn.h;
-  // draw smaller inside panel (center)
+  const brw = btn.w, brh = btn.h;
   const innerX = x + (w-brw)/2;
   const innerY = y + h - brh - 22;
   ctx.fillStyle = "#111";
@@ -613,8 +966,4 @@ function drawDeathOverlay(finalMs){
   ctx.fillText("RESTART", innerX + brw/2, innerY + brh/2 + 8);
 }
 
-/* ========== Utility: keep UI rects synced to canvas center when drawn as panel buttons ========== */
-/* we used startBtnRect() and restartBtnRect() which derive from canvas dims */
-
 /* ========== End script ========== */
-
