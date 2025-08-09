@@ -71,8 +71,9 @@ function lerp(a,b,t){ return a + (b-a)*t; }
 function distance(ax,ay,bx,by){ return Math.hypot(bx-ax, by-ay); }
 function randChoice(arr){ return arr[Math.floor(Math.random()*arr.length)]; }
 
+
 /* ======================
-   Bullet class
+   Bullet class (image + rotation)
    ====================== */
 class Bullet {
   constructor(x,y, vx,vy) {
@@ -84,52 +85,55 @@ class Bullet {
   update(dt) {
     this.x += this.vx * dt;
     this.y += this.vy * dt;
-    // kill off-screen
     if (this.x < -50 || this.x > canvas.width+50 || this.y < -50 || this.y > canvas.height+50) this.alive = false;
   }
   draw() {
+    if (assetsReady && assets.bullet.complete) {
+      ctx.save();
+      ctx.translate(this.x, this.y);
+      const angle = Math.atan2(this.vy, this.vx);
+      ctx.rotate(angle);
+      const size = Math.max(12, this.radius * 3); // tweak size
+      ctx.drawImage(assets.bullet, -size/2, -size/2, size, size);
+      ctx.restore();
+      return;
+    }
+    // fallback: circle
     ctx.save();
     ctx.translate(this.x, this.y);
     ctx.beginPath();
     ctx.fillStyle = "#ffd166";
     ctx.arc(0,0,this.radius,0,Math.PI*2);
     ctx.fill();
-    // little shine
     ctx.fillStyle = "rgba(255,255,255,0.6)";
-    ctx.beginPath();
-    ctx.arc(-2,-2,2,0,Math.PI*2);
-    ctx.fill();
+    ctx.beginPath(); ctx.arc(-2,-2,2,0,Math.PI*2); ctx.fill();
     ctx.restore();
   }
 }
 
 /* ======================
-   Gun attack (drawn by pencil)
-   - plays a quick 'draw' animation (scale pulse)
-   - then fires N bullets at intervals towards player's position (snapshot at shoot time)
-   - disappears after bullets are gone
+   GunAttack (accepts optional y, draws with image)
    ====================== */
 class GunAttack {
-  constructor(x) {
+  constructor(x, y = Math.max(20, PENCIL_ZONE_HEIGHT - 60)) {
     this.x = x;
-    this.y = PENCIL_ZONE_HEIGHT + 80;
-    this.scale = 0;               // for 'appearing' animation
+    // ensure gun is inside pencil zone (y < PENCIL_ZONE_HEIGHT)
+    this.y = Math.min(PENCIL_ZONE_HEIGHT - 20, Math.max(20, y));
+    this.scale = 0;
     this.alive = true;
 
-    // animation / shoot timings (ms)
-    this.drawDuration = 600;      // how long the pencil 'draws' the gun (animation growth)
+    this.drawDuration = 600;
     this.elapsed = 0;
 
     this.shootCount = 3;
     this.shotsFired = 0;
-    this.shootInterval = 350;     // ms between shots
+    this.shootInterval = 380; // slightly longer between shots
     this.shootTimer = 0;
 
-    this.postLife = 800;          // wait after last shot for bullets to clear
+    this.postLife = 900;
     this.afterTimer = 0;
-    this.bulletSpeed = 0.7;      // px/ms
+    this.bulletSpeed = 0.65;
 
-    // local bullets created by this gun
     this.localBullets = [];
   }
 
@@ -137,22 +141,17 @@ class GunAttack {
     if (!this.alive) return;
 
     this.elapsed += dt;
-    // during drawDuration, animate 'scale' from 0 to 1 with small overshoot
     if (this.elapsed < this.drawDuration) {
       const t = this.elapsed / this.drawDuration;
-      // ease out + overshoot
-      this.scale = Math.min(1.15, (1 - Math.pow(1-t,3)));
+      this.scale = Math.min(1.12, (1 - Math.pow(1-t,3)));
     } else {
-      // start shooting sequence
       this.shootTimer += dt;
       if (this.shotsFired < this.shootCount && this.shootTimer >= this.shootInterval) {
         this.shootTimer = 0;
         this.fireOneBullet();
         this.shotsFired++;
       }
-      // after firing everything, wait for bullets to leave then die
       if (this.shotsFired >= this.shootCount) {
-        // update local bullets
         this.localBullets = this.localBullets.filter(b => b.alive);
         if (this.localBullets.length === 0) {
           this.afterTimer += dt;
@@ -160,12 +159,10 @@ class GunAttack {
         }
       }
     }
-    // update bullets if any
     for (let b of this.localBullets) b.update(dt);
   }
 
   fireOneBullet() {
-    // get player's CURRENT position at the time of firing
     const targetX = mouseX;
     const targetY = mouseY;
     const dx = targetX - this.x;
@@ -175,38 +172,37 @@ class GunAttack {
     const vy = dy / mag * this.bulletSpeed;
     const bullet = new Bullet(this.x, this.y, vx, vy);
     this.localBullets.push(bullet);
-    // global bullets list for collision handling and rendering
     bullets.push(bullet);
-    // tiny muzzle flash effect (we'll briefly scale gun)
     this.scale = 1.25;
     setTimeout(()=> { this.scale = 1; }, 80);
   }
 
   draw() {
     if (!this.alive) return;
-    // draw a stylised gun: rectangle + barrel + pulse
     ctx.save();
     ctx.translate(this.x, this.y);
     ctx.scale(this.scale, this.scale);
-    ctx.translate(-40, -20);
-    // body
-    ctx.fillStyle = "#525252";
-    roundRect(ctx, 0, 0, 100, 40, 8); ctx.fill();
-    // barrel
-    ctx.fillStyle = "#2b2b2b";
-    ctx.fillRect(90, 12, 40, 16);
-    // little details
-    ctx.fillStyle = "#6b6b6b";
-    ctx.fillRect(8,8,30,24);
-    // sight
-    ctx.fillStyle = "#111";
-    ctx.fillRect(30, -8, 16, 8);
-    // shadow under gun
-    ctx.fillStyle = "rgba(0,0,0,0.12)";
-    ctx.beginPath(); ctx.ellipse(40,56,48,8,0,0,Math.PI*2); ctx.fill();
-
+    if (assetsReady && assets.gun.complete) {
+      const iw = assets.gun.width;
+      const ih = assets.gun.height;
+      // draw centered
+      const w = 120; const h = 56;
+      ctx.drawImage(assets.gun, -w/2, -h/2, w, h);
+    } else {
+      // fallback stylized gun (like your original)
+      ctx.translate(-40, -20);
+      ctx.fillStyle = "#525252";
+      roundRect(ctx, 0, 0, 100, 40, 8); ctx.fill();
+      ctx.fillStyle = "#2b2b2b";
+      ctx.fillRect(90, 12, 40, 16);
+      ctx.fillStyle = "#6b6b6b";
+      ctx.fillRect(8,8,30,24);
+      ctx.fillStyle = "#111";
+      ctx.fillRect(30, -8, 16, 8);
+      ctx.fillStyle = "rgba(0,0,0,0.12)";
+      ctx.beginPath(); ctx.ellipse(40,56,48,8,0,0,Math.PI*2); ctx.fill();
+    }
     ctx.restore();
-    // bullets are drawn globally
   }
 }
 
@@ -232,24 +228,24 @@ const PencilState = { IDLE: 'idle', MOVING: 'moving', DRAWING: 'drawing' };
 class EvilPencil {
   constructor() {
     this.x = canvas.width/2;
-    this.y = 30; // pencil drawn near top
+    this.y = 30;
     this.state = PencilState.IDLE;
 
     this.targetX = this.x;
-    this.moveSpeed = 0.35;  // px per ms (will scale up)
-    this.drawTime = 700;    // ms base
-
+    // gentler starting values
+    this.moveSpeed = 0.22;  // px per ms (slower start)
+    this.drawTime = 900;    // ms base (longer draw initially)
     this.frameTimer = 0;
     this.wobble = 0;
 
     this.idleTimer = 0;
-    this.idleDelay = 220; // ms between actions
+    this.idleDelay = 380; // ms between actions (longer)
+
+    this.actionsTaken = 0; // track how many spawns to scale difficulty
   }
 
   update(dt) {
-    // wobble animation
     this.wobble += dt * 0.005;
-
     if (this.state === PencilState.MOVING) {
       const dist = this.targetX - this.x;
       const dir = Math.sign(dist);
@@ -267,60 +263,67 @@ class EvilPencil {
         this.chooseNewTargetAndMove();
       }
     }
-    // DRAWING handled by a timeout in startDrawing (so we can spawn Gun)
   }
 
   chooseNewTargetAndMove() {
-    // choose left/center/right columns
-    const options = [canvas.width*0.25, canvas.width*0.5, canvas.width*0.75];
-    this.targetX = randChoice(options);
+    // choose any x across width with margin for variety (not just 3 columns)
+    const margin = Math.max(80, canvas.width * 0.05);
+    this.targetX = Math.random() * (canvas.width - margin*2) + margin;
     this.state = PencilState.MOVING;
   }
 
   startDrawing() {
     this.state = PencilState.DRAWING;
-    // show pencil drawing animation for a variable duration (difficulty scales)
-    const finalDrawDuration = Math.max(200, this.drawTime);
-    // create a little animated effect while drawing (we'll spawn gun after timeout)
+    const finalDrawDuration = Math.max(220, this.drawTime);
     setTimeout(() => {
-      // spawn the gun at current position
-      const gun = new GunAttack(this.x);
+      // spawn gun at pencil.x but random y inside the pencil zone
+      const gunY = Math.random() * (PENCIL_ZONE_HEIGHT - 60) + 30;
+      const gun = new GunAttack(this.x, gunY);
       guns.push(gun);
-      // after drawing, go back to idle and speed up (difficulty ramp)
       this.state = PencilState.IDLE;
       this.speedUp();
+      this.actionsTaken++;
     }, finalDrawDuration);
   }
-
-  speedUp() {
-    // tweak values to make the game harder over time
-    this.moveSpeed *= 1.03;  // 3% faster
-    this.drawTime *= 0.96;   // 4% faster drawing (less time)
-    this.idleDelay = Math.max(80, this.idleDelay * 0.98);
+    speedUp() {
+    // much slower ramp — smaller increments
+    this.moveSpeed *= 1.012;   // 1.2% faster per action (instead of 3%)
+    this.drawTime *= 0.997;    // tiny decrease in draw time (instead of 4%)
+    this.idleDelay = Math.max(110, this.idleDelay * 0.997);
+    // you can also optionally change gun properties over time (not too aggressively)
+    if (this.actionsTaken % 8 === 0) {
+      // every 8 spawns slightly increase bullet speed of future guns
+      // (we won't mutate existing guns - new guns will be slightly faster)
+      // if you want we can implement a global difficulty multiplier
+    }
   }
 
   draw() {
-    // draw pencil body (stylized)
     ctx.save();
     ctx.translate(this.x, this.y);
     const wob = Math.sin(this.wobble) * 6;
     ctx.rotate((wob * Math.PI/180) * 0.4);
-    // body
-    ctx.fillStyle = "#ffb703";
-    roundRect(ctx, -8, -8, 120, 24, 6);
-    // tip
-    ctx.beginPath();
-    ctx.moveTo(110,4); ctx.lineTo(130,0); ctx.lineTo(110,-4); ctx.closePath();
-    ctx.fillStyle = "#8b5e34";
-    ctx.fill();
-    // lead
-    ctx.beginPath(); ctx.moveTo(130,0); ctx.lineTo(138, -3); ctx.lineTo(138,3); ctx.closePath();
-    ctx.fillStyle = "#1d1d1b"; ctx.fill();
-    // eraser
-    ctx.fillStyle = "#d62828"; ctx.fillRect(-16, -6, 10, 12);
+
+    if (assetsReady && assets.pencil.complete) {
+      // draw pencil image centered
+      const w = 160, h = 48;
+      ctx.drawImage(assets.pencil, -w/2, -h/2, w, h);
+    } else {
+      // fallback original draw
+      ctx.fillStyle = "#ffb703";
+      roundRect(ctx, -8, -8, 120, 24, 6);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(110,4); ctx.lineTo(130,0); ctx.lineTo(110,-4); ctx.closePath();
+      ctx.fillStyle = "#8b5e34";
+      ctx.fill();
+      ctx.beginPath(); ctx.moveTo(130,0); ctx.lineTo(138, -3); ctx.lineTo(138,3); ctx.closePath();
+      ctx.fillStyle = "#1d1d1b"; ctx.fill();
+      ctx.fillStyle = "#d62828"; ctx.fillRect(-16, -6, 10, 12);
+    }
+
     ctx.restore();
 
-    // if drawing show scribbles below as 'sketch'
     if (this.state === PencilState.DRAWING) {
       ctx.save();
       ctx.strokeStyle = "#ffffff22";
