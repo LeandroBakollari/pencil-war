@@ -1,5 +1,6 @@
 /* ======================
-   Full game script (replace current) - FIXED
+   Full game script (updated: separate Gun/Cannon, X-slash preview, staff 3 layers)
+   Replace your current script with this file.
    ====================== */
 
 /* ========== Canvas & Resize ========== */
@@ -27,7 +28,6 @@ canvas.addEventListener('mousemove', (e) => {
   mouseX = Math.max(0, Math.min(e.clientX - rect.left, canvas.width));
   mouseY = Math.max(PLAY_TOP, Math.min(e.clientY - rect.top, canvas.height));
 });
-// clicks used for start & restart
 canvas.addEventListener('click', (e) => {
   const rect = canvas.getBoundingClientRect();
   const cx = e.clientX - rect.left;
@@ -59,24 +59,46 @@ function roundRect(ctx,x,y,w,h,r){
   ctx.closePath();
 }
 
+/* centralized damage application - ensures death triggers immediately */
+function applyDamage(dmg){
+  playerHealth = clamp(playerHealth - dmg, 0, MAX_HEALTH);
+  if (playerHealth <= 0 && gameState === 'playing') {
+    onPlayerDeath();
+  }
+}
+
 /* ========== Assets ========== */
 const assets = {
   pencil: new Image(),
-  gun: new Image(),
-  bullet: new Image()
+  gun: new Image(),      // original gun image kept
+  cannon: new Image(),   // cannon alternative
+  rocket: new Image(),   // rockets / cannon bullets
+  bullet: new Image(),   // fallback bullets
+  staff: new Image(),
+  fireball: new Image(),
+  sword: new Image(),
+  slash: new Image()
 };
+
 let assetsReady = false;
-let assetsToLoad = 3;
+let assetsToLoad = Object.keys(assets).length;
 function markLoaded(){ if(--assetsToLoad <= 0) assetsReady = true; }
 
-// <-- update these paths if your assets are elsewhere -->
-assets.pencil.src = 'assets/pencil.png';
-assets.gun.src    = 'assets/gun.png';
-assets.bullet.src = 'assets/bullet.png';
+// Update these paths to your real asset files
+assets.pencil.src  = 'assets/pencil.png';
+assets.gun.src     = 'assets/gun.png';
+assets.cannon.src  = 'assets/cannon.png';
+assets.rocket.src  = 'assets/rocket.png';
+assets.bullet.src  = 'assets/bullet.png';
+assets.staff.src   = 'assets/staff.png';
+assets.fireball.src= 'assets/fireball.png';
+assets.sword.src   = 'assets/sword.png';
+assets.slash.src   = 'assets/slash.png';
 
-assets.pencil.onload = markLoaded; assets.pencil.onerror = markLoaded;
-assets.gun.onload    = markLoaded; assets.gun.onerror    = markLoaded;
-assets.bullet.onload = markLoaded; assets.bullet.onerror = markLoaded;
+for (const k in assets){
+  assets[k].onload = markLoaded;
+  assets[k].onerror = markLoaded; // don't stall on load error
+}
 
 /* ========== Game state & config ========== */
 let gameState = 'menu'; // 'menu' | 'playing' | 'dead'
@@ -84,9 +106,9 @@ const MAX_HEALTH = 100;
 const BULLET_DAMAGE = 3;
 
 /* Timer */
-let runStartTime = 0;    // performance.now() when started
-let lastElapsed = 0;     // ms for display while playing
-let finalElapsed = 0;    // final time shown on death
+let runStartTime = 0;
+let lastElapsed = 0;
+let finalElapsed = 0;
 
 /* Player health */
 let playerHealth = MAX_HEALTH;
@@ -105,21 +127,17 @@ function restartBtnRect(){
 const difficulty = {
   time: 0,
   level: 0,
-  // timeToRamp controls how fast difficulty.level grows (ms). larger = slower ramp
-  timeToRamp: 120000, // 2 minutes to reach '1' (you can tweak)
+  timeToRamp: 120000,
   tick(dt){
     this.time += dt;
     this.level = Math.min(10, this.time / this.timeToRamp);
   }
 };
 
-/* ========== Attacks system (registry + list) ========== */
-const attackRegistry = []; // push classes here
-const attacks = []; // ACTIVE attack instances
-
+/* ========== Attacks registry & list ========== */
+const attackRegistry = [];
+const attacks = [];
 function registerAttack(cls){ attackRegistry.push(cls); }
-
-// spawn random attack (equal weight)
 function spawnRandomAttack(x){
   if (attackRegistry.length === 0) return;
   const idx = Math.floor(Math.random() * attackRegistry.length);
@@ -129,6 +147,9 @@ function spawnRandomAttack(x){
   return instance;
 }
 
+/* ======================
+   AttackBase (base class)
+   ====================== */
 class AttackBase {
   constructor() {
     this.alive = true;
@@ -137,21 +158,22 @@ class AttackBase {
     this.active = false; // becomes true after telegraphDuration
   }
   update(dt){
+    if (!this.alive) return;
     this.elapsed += dt;
     if (!this.active && this.elapsed >= this.telegraphDuration) this.active = true;
   }
   draw(ctx){}
 }
 
-/* ========== Bullet class (MUST be present) ========== */
+/* ========== Bullet class ========== */
 class Bullet {
   constructor(x,y, vx,vy) {
     this.x = x; this.y = y;
     this.vx = vx; this.vy = vy;
     this.radius = 6;
     this.alive = true;
-    // optional per-bullet damage (default handled in collision)
-    // this.damage = undefined;
+    this.damage = undefined;
+    this.sprite = undefined; // optional image
   }
   update(dt) {
     this.x += this.vx * dt;
@@ -159,31 +181,37 @@ class Bullet {
     if (this.x < -50 || this.x > canvas.width+50 || this.y < -50 || this.y > canvas.height+50) this.alive = false;
   }
   draw() {
-    if (assetsReady && assets.bullet.complete) {
+    if (this.sprite && this.sprite.complete) {
       ctx.save();
       ctx.translate(this.x, this.y);
       const angle = Math.atan2(this.vy, this.vx);
       ctx.rotate(angle);
-      const size = Math.max(12, this.radius * 3);
-      ctx.drawImage(assets.bullet, -size/2, -size/2, size, size);
+      const size = Math.max(14, this.radius * 3);
+      ctx.drawImage(this.sprite, -size/2, -size/2, size, size);
       ctx.restore();
       return;
     }
-    // fallback: circle
+    if (assetsReady && assets.bullet.complete) {
+      ctx.save();
+      ctx.translate(this.x, this.y);
+      ctx.beginPath();
+      ctx.fillStyle = "#ffd166";
+      ctx.arc(0,0,this.radius,0,Math.PI*2);
+      ctx.fill();
+      ctx.restore();
+      return;
+    }
     ctx.save();
-    ctx.translate(this.x, this.y);
     ctx.beginPath();
     ctx.fillStyle = "#ffd166";
-    ctx.arc(0,0,this.radius,0,Math.PI*2);
+    ctx.arc(this.x,this.y,this.radius,0,Math.PI*2);
     ctx.fill();
-    ctx.fillStyle = "rgba(255,255,255,0.6)";
-    ctx.beginPath(); ctx.arc(-2,-2,2,0,Math.PI*2); ctx.fill();
     ctx.restore();
   }
 }
 
 /* ======================
-   GunAttack as an AttackBase (telegraph -> shoot -> done)
+   GunAttack (uses assets.gun)
    ====================== */
 class GunAttack extends AttackBase {
   constructor(x, y = Math.max(30, PENCIL_ZONE_HEIGHT - 60)) {
@@ -192,39 +220,32 @@ class GunAttack extends AttackBase {
     this.y = Math.min(PENCIL_ZONE_HEIGHT - 20, Math.max(20, y));
     this.scale = 0;
 
-    // timings
-    this.telegraphDuration = 600; // show 'draw' before shooting
-    this.drawDuration = this.telegraphDuration; // alias for clarity
+    this.telegraphDuration = 600;
+    this.drawDuration = this.telegraphDuration;
     this.elapsed = 0;
 
-    // shooting
     this.shootCount = 3;
     this.shotsFired = 0;
     this.shootInterval = 380;
     this.shootTimer = 0;
 
-    // afterlife
     this.postLife = 900;
     this.afterTimer = 0;
 
-    // bullet behavior
-    this.bulletSpeed = 0.65; // px/ms
-    this.localBullets = [];  // local bullets for this gun (also pushed to global bullets)
+    this.bulletSpeed = 0.7; // px/ms (gun bullets slightly faster)
+    this.localBullets = [];
   }
 
   update(dt) {
     if (!this.alive) return;
-    super.update(dt); // updates elapsed and sets active
+    super.update(dt);
 
-    // animate scale during telegraph/draw
     if (!this.active) {
       const t = clamp(this.elapsed / this.drawDuration, 0, 1);
-      // ease out + slight overshoot
       this.scale = Math.min(1.12, (1 - Math.pow(1 - t, 3)));
       return;
     }
 
-    // active (shooting) phase
     this.shootTimer += dt;
     if (this.shotsFired < this.shootCount && this.shootTimer >= this.shootInterval) {
       this.shootTimer = 0;
@@ -232,10 +253,8 @@ class GunAttack extends AttackBase {
       this.shotsFired++;
     }
 
-    // update local bullets
     for (let b of this.localBullets) b.update(dt);
 
-    // after firing all, wait for bullets to clear then die after postLife
     if (this.shotsFired >= this.shootCount) {
       this.localBullets = this.localBullets.filter(b => b.alive);
       if (this.localBullets.length === 0) {
@@ -246,7 +265,6 @@ class GunAttack extends AttackBase {
   }
 
   fireOneBullet() {
-    // snapshot player position at shot time
     const targetX = mouseX;
     const targetY = mouseY;
     const dx = targetX - this.x;
@@ -255,12 +273,11 @@ class GunAttack extends AttackBase {
     const vx = dx / mag * this.bulletSpeed;
     const vy = dy / mag * this.bulletSpeed;
     const bullet = new Bullet(this.x, this.y, vx, vy);
-    // attach damage per-bullet (defaults used in collision)
     bullet.damage = BULLET_DAMAGE;
+    bullet.sprite = (assets.bullet && assets.bullet.complete) ? assets.bullet : undefined; // gun uses bullet sprite
     this.localBullets.push(bullet);
     bullets.push(bullet);
 
-    // muzzle flash/pulse
     this.scale = 1.25;
     setTimeout(()=> { this.scale = 1; }, 80);
   }
@@ -268,21 +285,18 @@ class GunAttack extends AttackBase {
   draw() {
     if (!this.alive) return;
 
-    // If we're in telegraph (not active) show the pencil-drawing animation (telegraph)
     if (!this.active) {
       ctx.save();
       ctx.translate(this.x, this.y);
       const t = clamp(this.elapsed / this.drawDuration, 0, 1);
       const s = Math.min(1.12, (1 - Math.pow(1 - t, 3)));
       ctx.scale(s, s);
-      // draw faint gun preview
       ctx.fillStyle = "rgba(160,160,160,0.12)";
       roundRect(ctx, -60, -20, 120, 40, 8); ctx.fill();
       ctx.restore();
       return;
     }
 
-    // active / shooting: draw gun image or fallback shape
     ctx.save();
     ctx.translate(this.x, this.y);
     ctx.scale(this.scale, this.scale);
@@ -290,26 +304,121 @@ class GunAttack extends AttackBase {
       const w = 120; const h = 56;
       ctx.drawImage(assets.gun, -w/2, -h/2, w, h);
     } else {
-      ctx.translate(-40, -20);
       ctx.fillStyle = "#525252";
-      roundRect(ctx, 0, 0, 100, 40, 8); ctx.fill();
-      ctx.fillStyle = "#2b2b2b";
-      ctx.fillRect(90, 12, 40, 16);
-      ctx.fillStyle = "#6b6b6b";
-      ctx.fillRect(8,8,30,24);
-      ctx.fillStyle = "#111";
-      ctx.fillRect(30, -8, 16, 8);
-      ctx.fillStyle = "rgba(0,0,0,0.12)";
-      ctx.beginPath(); ctx.ellipse(40,56,48,8,0,0,Math.PI*2); ctx.fill();
+      roundRect(ctx, -60, -20, 120, 40, 8); ctx.fill();
     }
     ctx.restore();
   }
 }
 registerAttack(GunAttack);
 
-/* ========== Mortar, Sword, Staff attacks (unchanged, but rely on difficulty existing) ========== */
+/* ======================
+   CannonAttack (uses assets.cannon + rocket sprite)
+   different behavior and visuals from GunAttack
+   ====================== */
+class CannonAttack extends AttackBase {
+  constructor(x, y = Math.max(30, PENCIL_ZONE_HEIGHT - 60)) {
+    super();
+    this.x = x;
+    this.y = Math.min(PENCIL_ZONE_HEIGHT - 20, Math.max(20, y));
+    this.scale = 0;
 
-// small Explosion helper
+    this.telegraphDuration = 700; // slightly longer telegraph
+    this.drawDuration = this.telegraphDuration;
+    this.elapsed = 0;
+
+    this.shootCount = 2; // fewer but harder shots
+    this.shotsFired = 0;
+    this.shootInterval = 650;
+    this.shootTimer = 0;
+
+    this.postLife = 900;
+    this.afterTimer = 0;
+
+    this.bulletSpeed = 0.55; // rockets slower but heavier
+    this.localBullets = [];
+  }
+
+  update(dt) {
+    if (!this.alive) return;
+    super.update(dt);
+
+    if (!this.active) {
+      const t = clamp(this.elapsed / this.drawDuration, 0, 1);
+      this.scale = Math.min(1.12, (1 - Math.pow(1 - t, 3)));
+      return;
+    }
+
+    this.shootTimer += dt;
+    if (this.shotsFired < this.shootCount && this.shootTimer >= this.shootInterval) {
+      this.shootTimer = 0;
+      this.fireOneRocket();
+      this.shotsFired++;
+    }
+
+    for (let b of this.localBullets) b.update(dt);
+
+    if (this.shotsFired >= this.shootCount) {
+      this.localBullets = this.localBullets.filter(b => b.alive);
+      if (this.localBullets.length === 0) {
+        this.afterTimer += dt;
+        if (this.afterTimer >= this.postLife) this.alive = false;
+      }
+    }
+  }
+
+  fireOneRocket() {
+    const targetX = mouseX;
+    const targetY = mouseY;
+    const dx = targetX - this.x;
+    const dy = targetY - this.y;
+    const mag = Math.hypot(dx, dy) || 1;
+    const vx = dx / mag * this.bulletSpeed;
+    const vy = dy / mag * this.bulletSpeed;
+    const bullet = new Bullet(this.x, this.y, vx, vy);
+    bullet.damage = 9; // heavier
+    bullet.radius = 8;
+    bullet.sprite = (assets.rocket && assets.rocket.complete) ? assets.rocket : (assets.bullet && assets.bullet.complete ? assets.bullet : undefined);
+    this.localBullets.push(bullet);
+    bullets.push(bullet);
+
+    this.scale = 1.18;
+    setTimeout(()=> { this.scale = 1; }, 100);
+  }
+
+  draw() {
+    if (!this.alive) return;
+
+    if (!this.active) {
+      ctx.save();
+      ctx.translate(this.x, this.y);
+      const t = clamp(this.elapsed / this.drawDuration, 0, 1);
+      const s = Math.min(1.12, (1 - Math.pow(1 - t, 3)));
+      ctx.scale(s, s);
+      ctx.fillStyle = "rgba(180,120,120,0.12)";
+      roundRect(ctx, -70, -24, 140, 48, 10); ctx.fill();
+      ctx.restore();
+      return;
+    }
+
+    ctx.save();
+    ctx.translate(this.x, this.y);
+    ctx.scale(this.scale, this.scale);
+    if (assetsReady && assets.cannon.complete) {
+      const w = 140; const h = 64;
+      ctx.drawImage(assets.cannon, -w/2, -h/2, w, h);
+    } else {
+      ctx.fillStyle = "#3b3b3b";
+      roundRect(ctx, -70, -24, 140, 48, 10); ctx.fill();
+    }
+    ctx.restore();
+  }
+}
+registerAttack(CannonAttack);
+
+/* ======================
+   MortarAttack (kept for variety) - uses explosions
+   ====================== */
 class Explosion {
   constructor(x,y, radius, damage, life=400){
     this.x = x; this.y = y;
@@ -318,7 +427,7 @@ class Explosion {
     this.elapsed = 0;
     this.life = life;
     this.alive = true;
-    this.applied = false; // apply damage once
+    this.applied = false;
   }
   update(dt){
     this.elapsed += dt;
@@ -328,7 +437,7 @@ class Explosion {
     const t = this.elapsed / this.life;
     ctx.save();
     ctx.beginPath();
-    ctx.lineWidth = 4 * (1 - t);
+    ctx.lineWidth = 6 * (1 - t);
     ctx.strokeStyle = `rgba(255,120,40,${1 - t})`;
     ctx.arc(this.x, this.y, this.radius * (0.7 + 0.7 * t), 0, Math.PI*2);
     ctx.stroke();
@@ -338,29 +447,28 @@ class Explosion {
     if (this.applied) return;
     const d = distance(this.x, this.y, mouseX, mouseY);
     if (d <= this.radius + playerRadius) {
-      playerHealth = clamp(playerHealth - this.damage, 0, MAX_HEALTH);
+      applyDamage(this.damage);
     }
     this.applied = true;
   }
 }
 
-// MortarAttack
 class MortarAttack extends AttackBase {
   constructor(x){
     super();
     this.x = x;
     this.targets = [];
     for (let i=0;i<3;i++){
-      const rx = clamp(mouseX + (Math.random()*2 - 1) * 160, 40, canvas.width-40);
-      const ry = clamp(mouseY + (Math.random()*2 - 1) * 120, PLAY_TOP+40, canvas.height-40);
+      const rx = clamp(mouseX + (Math.random()*2 - 1) * 180, 40, canvas.width-40);
+      const ry = clamp(mouseY + (Math.random()*2 - 1) * 140, PLAY_TOP+40, canvas.height-40);
       this.targets.push({x: rx, y: ry, arrived:false});
     }
-    this.telegraphDuration = 900; // show circles longer so player can dodge
-    this.rocketSpeed = 0.5 + (0.05 * (difficulty.level || 0)); // px/ms
+    this.telegraphDuration = 900;
+    this.rocketSpeed = 0.7 + (0.08 * (difficulty.level || 0));
     this.rockets = [];
     this.explosions = [];
-    this.explosionRadius = 48;
-    this.damage = 12;
+    this.explosionRadius = 64;
+    this.damage = 14;
     this.state = 'telegraph';
   }
 
@@ -386,9 +494,9 @@ class MortarAttack extends AttackBase {
         const vy = dy / mag * this.rocketSpeed;
         r.x += vx * dt;
         r.y += vy * dt;
-        if (distance(r.x,r.y, r.tx, r.ty) <= 6){
+        if (distance(r.x,r.y, r.tx, r.ty) <= 8){
           r.done = true;
-          const ex = new Explosion(r.tx, r.ty, this.explosionRadius, this.damage, 500);
+          const ex = new Explosion(r.tx, r.ty, this.explosionRadius, this.damage, 400);
           this.explosions.push(ex);
         }
       }
@@ -420,10 +528,14 @@ class MortarAttack extends AttackBase {
     }
     for (let r of this.rockets){
       ctx.save();
-      ctx.translate(r.x, r.y);
-      ctx.beginPath();
-      ctx.fillStyle = "#ff8f3c";
-      ctx.arc(0,0,7,0,Math.PI*2); ctx.fill();
+      if (assetsReady && assets.rocket.complete) {
+        ctx.translate(r.x, r.y);
+        ctx.drawImage(assets.rocket, -8, -8, 16, 16);
+      } else {
+        ctx.beginPath();
+        ctx.fillStyle = "#ff8f3c";
+        ctx.arc(r.x, r.y, 7, 0, Math.PI*2); ctx.fill();
+      }
       ctx.restore();
     }
     for (let e of this.explosions) e.draw();
@@ -431,8 +543,9 @@ class MortarAttack extends AttackBase {
 }
 registerAttack(MortarAttack);
 
+/* ========== Sword / Slash system (fixed X preview + mid-speed preview) ========== */
 class SlashHit {
-  constructor(x,y, angle, length, width, life=180, damage=6){
+  constructor(x,y, angle, length, width, life=360, damage=6){
     this.x = x; this.y = y; this.angle = angle; this.length = length; this.width = width;
     this.elapsed = 0; this.life = life; this.alive = true; this.damage = damage; this.applied = false;
   }
@@ -445,7 +558,7 @@ class SlashHit {
       if (proj >= -this.length/2 && proj <= this.length/2){
         const perp = Math.abs(-dy*rx + dx*ry);
         if (perp <= this.width/2 + playerRadius){
-          playerHealth = clamp(playerHealth - this.damage, 0, MAX_HEALTH);
+          applyDamage(this.damage);
         }
       }
       this.applied = true;
@@ -455,10 +568,14 @@ class SlashHit {
     ctx.save();
     ctx.translate(this.x, this.y);
     ctx.rotate(this.angle);
-    ctx.beginPath();
-    ctx.fillStyle = "rgba(255,255,255,0.06)";
-    roundRect(ctx, -this.length/2, -this.width/2, this.length, this.width, this.width/2);
-    ctx.fill();
+    if (assetsReady && assets.slash.complete) {
+      ctx.drawImage(assets.slash, -this.length/2, -this.width/2, this.length, this.width);
+    } else {
+      ctx.beginPath();
+      ctx.fillStyle = "rgba(255,255,255,0.06)";
+      roundRect(ctx, -this.length/2, -this.width/2, this.length, this.width, this.width/2);
+      ctx.fill();
+    }
     ctx.restore();
   }
 }
@@ -467,21 +584,33 @@ class SwordAttack extends AttackBase {
   constructor(x){
     super();
     this.x = x;
-    this.telegraphDuration = 700;
+    // mid-speed telegraph (not too long, not too short)
+    this.telegraphDuration = 1000; // middle ground
     this.slashSpots = [];
     for (let i=0;i<3;i++){
       this.slashSpots.push({x: clamp(mouseX + (Math.random()*2-1)*40, 40, canvas.width-40),
                             y: clamp(mouseY + (Math.random()*2-1)*40, PLAY_TOP+40, canvas.height-40)});
     }
     this.phase = 0;
-    this.slashTimers = [0,120,240];
+    // timers (a bit faster than previously very long, middle speed)
+    this.slashTimers = [200, 360, 520];
     this.slashes = [];
     this.xSlashCreated = false;
+    // preview center recorded so X preview exists during telegraph
+    this.centerPreview = { x: mouseX, y: mouseY };
   }
 
   update(dt){
     super.update(dt);
+    // update preview center so player sees where the X will be (tracks player a bit)
+    if (!this.active){
+      // smooth follow so preview isn't jittery
+      this.centerPreview.x = lerp(this.centerPreview.x, mouseX, 0.12);
+      this.centerPreview.y = lerp(this.centerPreview.y, mouseY, 0.12);
+    }
+
     if (!this.active) return;
+
     if (this.phase === 0) {
       this.phase = 1;
       this.phaseElapsed = 0;
@@ -489,17 +618,19 @@ class SwordAttack extends AttackBase {
       this.phaseElapsed += dt;
       for (let i=0;i<this.slashSpots.length;i++){
         if (this.phaseElapsed >= this.slashTimers[i] && !this.slashes[i]){
-          const angle = (Math.random()*0.6 - 0.3) + Math.atan2(0,1);
+          const angle = (Math.random()*0.6 - 0.3) + 0; // small variation
           const spot = this.slashSpots[i];
-          const s = new SlashHit(spot.x, spot.y, angle, 180, 36, 180, 6);
+          const s = new SlashHit(spot.x, spot.y, angle, 320, 48, 420, 8);
           this.slashes[i] = s;
         }
       }
       for (let s of this.slashes) if (s) s.update(dt);
-      if (this.phaseElapsed >= 420 && !this.xSlashCreated){
-        const center = { x: mouseX, y: mouseY };
-        const s1 = new SlashHit(center.x, center.y, Math.PI/4, 240, 32, 260, 10);
-        const s2 = new SlashHit(center.x, center.y, -Math.PI/4, 240, 32, 260, 10);
+
+      // schedule X-slash a little after the single slashes begin (gives a short preview while active)
+      if (this.phaseElapsed >= 640 && !this.xSlashCreated){
+        const center = { x: this.centerPreview.x, y: this.centerPreview.y };
+        const s1 = new SlashHit(center.x, center.y, Math.PI/4, 380, 40, 520, 12);
+        const s2 = new SlashHit(center.x, center.y, -Math.PI/4, 380, 40, 520, 12);
         this.slashes.push(s1, s2);
         this.xSlashCreated = true;
       }
@@ -510,6 +641,7 @@ class SwordAttack extends AttackBase {
 
   draw(){
     if (!this.active){
+      // preview for the 3 spots
       for (let sp of this.slashSpots){
         ctx.save();
         ctx.translate(sp.x, sp.y);
@@ -521,6 +653,15 @@ class SwordAttack extends AttackBase {
         ctx.stroke();
         ctx.restore();
       }
+      // preview for the X-slash at centerPreview
+      ctx.save();
+      ctx.translate(this.centerPreview.x, this.centerPreview.y);
+      ctx.rotate(0);
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = "rgba(255,220,220,0.22)";
+      ctx.beginPath(); ctx.moveTo(-40,-40); ctx.lineTo(40,40); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(-40,40); ctx.lineTo(40,-40); ctx.stroke();
+      ctx.restore();
       return;
     }
     for (let s of this.slashes) if (s) s.draw();
@@ -528,17 +669,18 @@ class SwordAttack extends AttackBase {
 }
 registerAttack(SwordAttack);
 
+/* ========== Staff Attack (now 3 layers/waves) ========== */
 class StaffAttack extends AttackBase {
   constructor(x){
     super();
     this.x = x;
     this.telegraphDuration = 650;
-    this.waveCount = 0;
     this.waveDelay = 280;
     this.spawnedWaves = 0;
     this.bulletSpeed = 0.5; // px/ms
     this.numPerWave = 18;
     this.baseDamage = 2;
+    this.waveTimer = 0;
   }
 
   update(dt){
@@ -553,6 +695,13 @@ class StaffAttack extends AttackBase {
       this.waveTimer += dt;
       if (this.waveTimer >= this.waveDelay){
         this.spawnWave(5 * Math.PI/180);
+        this.spawnedWaves++;
+        this.waveTimer = 0;
+      }
+    } else if (this.spawnedWaves === 2){
+      this.waveTimer += dt;
+      if (this.waveTimer >= this.waveDelay){
+        this.spawnWave(-5 * Math.PI/180);
         this.spawnedWaves++;
       }
     } else {
@@ -569,28 +718,29 @@ class StaffAttack extends AttackBase {
       const vx = Math.cos(angle) * this.bulletSpeed;
       const vy = Math.sin(angle) * this.bulletSpeed;
       const b = new Bullet(sx, sy, vx, vy);
-      b.radius = 5;
+      b.radius = 6;
       b.damage = this.baseDamage;
+      b.sprite = (assets.fireball && assets.fireball.complete) ? assets.fireball : undefined;
       bullets.push(b);
     }
   }
 
   draw(){
     if (!this.active){
-      ctx.save();
-      ctx.beginPath();
-      ctx.strokeStyle = "rgba(255,140,40,0.18)";
-      ctx.lineWidth = 22;
-      ctx.arc(this.x, PLAY_TOP + 20, 160, 0, Math.PI);
-      ctx.stroke();
-      ctx.restore();
+      // intentionally minimal preview
       return;
     }
+    ctx.save();
+    if (assetsReady && assets.staff.complete) {
+      ctx.translate(this.x, PLAY_TOP - 18);
+      ctx.drawImage(assets.staff, -40, -20, 80, 40);
+    }
+    ctx.restore();
   }
 }
 registerAttack(StaffAttack);
 
-/* ========== Pencil controller ========== */
+/* ========== Pencil controller (no wavy draw line) ========== */
 const PencilState = { IDLE: 'idle', MOVING: 'moving', DRAWING: 'drawing' };
 
 class EvilPencil {
@@ -626,7 +776,6 @@ class EvilPencil {
       }
     } else if (this.state === PencilState.IDLE) {
       this.idleTimer += dt;
-      // only auto-choose moves when playing
       if (gameState === 'playing' && this.idleTimer >= this.idleDelay) {
         this.idleTimer = 0;
         this.chooseNewTargetAndMove();
@@ -659,7 +808,6 @@ class EvilPencil {
     this.idleDelay = Math.max(110, this.idleDelay * 0.997);
   }
 
-  // instruct pencil to move to center & stop spawning (used on death)
   goToCenterAndStop() {
     this.targetX = canvas.width/2;
     this.state = PencilState.MOVING;
@@ -688,25 +836,12 @@ class EvilPencil {
     }
     ctx.restore();
 
-    if (this.state === PencilState.DRAWING) {
-      ctx.save();
-      ctx.strokeStyle = "#ffffff22";
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      const sx = this.x - 60;
-      for (let i=0;i<6;i++){
-        const px = sx + i*20;
-        const py = PENCIL_ZONE_HEIGHT + 18 + Math.sin((i + Date.now()*0.003))*8;
-        ctx.lineTo(px,py);
-      }
-      ctx.stroke();
-      ctx.restore();
-    }
+    // removed wavy draw line by design
   }
 }
 
 /* ========== Globals & init ========== */
-const guns = []; // legacy (not actively used now)
+const guns = [];
 const bullets = [];
 const pencil = new EvilPencil();
 
@@ -757,17 +892,14 @@ function loop(now) {
 requestAnimationFrame(loop);
 
 function update(dt) {
-  // tick difficulty always (it will only increase while playing because we reset on start)
   difficulty.tick(dt);
 
   if (gameState === 'playing') {
     pencil.update(dt);
 
-    // update attacks (telegraph and active phases)
     for (let a of attacks) a.update(dt);
     for (let i = attacks.length-1; i>=0; i--) if (!attacks[i].alive) attacks.splice(i,1);
 
-    // update bullets (global projectiles)
     for (let b of bullets) b.update(dt);
 
     // collision: bullets -> player (uses bullet.damage if present)
@@ -778,25 +910,19 @@ function update(dt) {
       if (d <= b.radius + playerRadius) {
         b.alive = false;
         const hitDamage = (b.damage !== undefined) ? b.damage : BULLET_DAMAGE;
-        playerHealth = clamp(playerHealth - hitDamage, 0, MAX_HEALTH);
+        applyDamage(hitDamage);
         bullets.splice(i,1);
-        if (playerHealth <= 0) { onPlayerDeath(); break; }
+        if (gameState === 'dead') { break; }
       }
     }
 
-    // cleanup dead guns (if you still use them anywhere) - optional
     for (let i = guns.length-1; i>=0; i--) if (!guns[i].alive) guns.splice(i,1);
 
-    // timer update
     lastElapsed = performance.now() - runStartTime;
   } else {
-    // non-playing: allow pencil to move to center, update visuals only
     pencil.update(dt);
-
-    // update attacks visually so telegraphs or in-flight things still animate
     for (let a of attacks) a.update(dt);
     for (let i = attacks.length-1; i>=0; i--) if (!attacks[i].alive) attacks.splice(i,1);
-
     for (let b of bullets) b.update(dt);
     for (let i = bullets.length-1; i>=0; i--) if (!bullets[i].alive) bullets.splice(i,1);
     for (let i = guns.length-1; i>=0; i--) if (!guns[i].alive) guns.splice(i,1);
@@ -862,7 +988,6 @@ function drawPlayer(){
   ctx.beginPath();
   ctx.fillStyle = "#da0303";
   ctx.arc(mouseX, mouseY, playerRadius, 0, Math.PI*2); ctx.fill();
-  // halo
   ctx.beginPath();
   ctx.strokeStyle = "rgba(218,3,3,0.14)"; ctx.lineWidth = 6;
   ctx.arc(mouseX, mouseY, 16, 0, Math.PI*2); ctx.stroke();
